@@ -5,6 +5,7 @@ import fire
 
 from llama import Llama
 from typing import List
+import time
 
 def main(
     ckpt_dir: str,
@@ -14,6 +15,7 @@ def main(
     max_seq_len: int = 128,
     max_gen_len: int = 64,
     max_batch_size: int = 4,
+    is_compile: int = 0
 ):
     """
     Entry point of the program for generating text using a pretrained model.
@@ -34,6 +36,7 @@ def main(
         tokenizer_path=tokenizer_path,
         max_seq_len=max_seq_len,
         max_batch_size=max_batch_size,
+        is_compile=is_compile
     )
 
     prompts: List[str] = [
@@ -53,12 +56,23 @@ def main(
         plush girafe => girafe peluche
         cheese =>""",
     ]
-    results = generator.text_completion(
-        prompts,
-        max_gen_len=max_gen_len,
-        temperature=temperature,
-        top_p=top_p,
-    )
+    #warm up
+    # generator.text_completion(
+    #     prompts,
+    #     max_gen_len=max_gen_len,
+    #     temperature=temperature,
+    #     top_p=top_p,
+    # )
+    start = time.time()
+    for _ in range(100):
+        results = generator.text_completion(
+            prompts,
+            max_gen_len=max_gen_len,
+            temperature=temperature,
+            top_p=top_p,
+        )
+    end = time.time()
+    print(f'inference time: {(end - start)/(100 * 1000.0)}ms')
     for prompt, result in zip(prompts, results):
         print(prompt)
         print(f"> {result['generation']}")
