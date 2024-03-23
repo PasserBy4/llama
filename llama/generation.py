@@ -241,7 +241,7 @@ class Llama:
         max_gen_len: Optional[int] = None,
         logprobs: bool = False,
         echo: bool = False,
-    ) -> List[CompletionPrediction]:
+    ) -> Tuple[List[CompletionPrediction], float]:
         """
         Perform text completion for a list of prompts using the language generation model.
 
@@ -265,6 +265,8 @@ class Llama:
         if max_gen_len is None:
             max_gen_len = self.model.params.max_seq_len - 1
         prompt_tokens = [self.tokenizer.encode(x, bos=True, eos=False) for x in prompts]
+
+        start_time = time.time()
         generation_tokens, generation_logprobs = self.generate(
             prompt_tokens=prompt_tokens,
             max_gen_len=max_gen_len,
@@ -273,6 +275,11 @@ class Llama:
             logprobs=logprobs,
             echo=echo,
         )
+
+        end_time = time.time()
+        total_time = end_time - start_time
+        total_tokens = sum(len(tokens) for tokens in generation_tokens)
+        speed = total_tokens / total_time
         if logprobs:
             return [
                 {
@@ -281,8 +288,9 @@ class Llama:
                     "logprobs": logprobs_i,
                 }
                 for t, logprobs_i in zip(generation_tokens, generation_logprobs)
-            ]
-        return [{"generation": self.tokenizer.decode(t)} for t in generation_tokens]
+            ], speed
+        
+        return [{"generation": self.tokenizer.decode(t)} for t in generation_tokens], speed
 
     def chat_completion(
         self,

@@ -7,6 +7,8 @@ from llama import Llama
 from typing import List
 import time
 
+N_ITERS = 1
+
 def main(
     ckpt_dir: str,
     tokenizer_path: str,
@@ -56,23 +58,26 @@ def main(
         plush girafe => girafe peluche
         cheese =>""",
     ]
-    #warm up
-    # generator.text_completion(
-    #     prompts,
-    #     max_gen_len=max_gen_len,
-    #     temperature=temperature,
-    #     top_p=top_p,
-    # )
-    start = time.time()
-    for _ in range(100):
-        results = generator.text_completion(
+    # warm up
+    generator.text_completion(
+        prompts,
+        max_gen_len=max_gen_len,
+        temperature=temperature,
+        top_p=top_p,
+    )
+
+    ave_speed = 0.0
+    for _ in range(N_ITERS):
+        results, speed = generator.text_completion(
             prompts,
             max_gen_len=max_gen_len,
             temperature=temperature,
             top_p=top_p,
         )
-    end = time.time()
-    print(f'inference time: {(end - start)/(100 * 1000.0)}ms')
+        ave_speed += speed
+    ave_speed /= N_ITERS
+    
+    print(f'inference speed: {ave_speed} token/s')
     for prompt, result in zip(prompts, results):
         print(prompt)
         print(f"> {result['generation']}")
