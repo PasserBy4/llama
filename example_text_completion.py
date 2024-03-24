@@ -7,7 +7,7 @@ from llama import Llama
 from typing import List
 import time
 
-N_ITERS = 1
+N_ITERS = 10
 
 def main(
     ckpt_dir: str,
@@ -59,12 +59,13 @@ def main(
         cheese =>""",
     ]
     # warm up
-    generator.text_completion(
-        prompts,
-        max_gen_len=max_gen_len,
-        temperature=temperature,
-        top_p=top_p,
-    )
+    for _ in range(10):
+        generator.text_completion(
+            prompts,
+            max_gen_len=max_gen_len,
+            temperature=temperature,
+            top_p=top_p,
+        )
 
     ave_speed = 0.0
     for _ in range(N_ITERS):
@@ -74,6 +75,7 @@ def main(
             temperature=temperature,
             top_p=top_p,
         )
+        print(f'iter {_}: {speed} tokens/s')
         ave_speed += speed
     ave_speed /= N_ITERS
     

@@ -121,6 +121,10 @@ class Llama:
         model.load_state_dict(checkpoint, strict=False)
         if is_compile == 1:
             model = torch.compile(model)
+            print('The model is compiled')
+        if is_compile == 2:
+            model = torch.compile(model, mode="reduce-overhead", fullgraph=True)
+            print('The model is compiled (mode=reduce-overhead, fullgraph=True)')
         print(f"Loaded in {time.time() - start_time:.2f} seconds")
 
         return Llama(model, tokenizer)
