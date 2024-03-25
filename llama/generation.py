@@ -16,7 +16,7 @@ from fairscale.nn.model_parallel.initialize import (
     model_parallel_is_initialized,
 )
 
-from llama.model import ModelArgs, Transformer
+from llama.model import ModelArgs, Transformer, default_quantize, default_parallelism
 from llama.tokenizer import Tokenizer
 
 Role = Literal["system", "user", "assistant"]
@@ -55,7 +55,9 @@ class Llama:
         tokenizer_path: str,
         max_seq_len: int,
         max_batch_size: int,
-        is_compile: int,
+        compile_mode: int,
+        quantize_mode: int,
+        parallelism: int,
         model_parallel_size: Optional[int] = None,
         seed: int = 1,
     ) -> "Llama":
@@ -117,12 +119,18 @@ class Llama:
         tokenizer = Tokenizer(model_path=tokenizer_path)
         model_args.vocab_size = tokenizer.n_words
         torch.set_default_tensor_type(torch.cuda.HalfTensor)
+        parallelism_ctx_tok = default_parallelism.set(parallelism)
+        quantize_ctx_tok = default_quantize.set(quantize_mode)
         model = Transformer(model_args)
+        default_quantize.reset(quantize_ctx_tok)
+        default_parallelism.reset(parallelism_ctx_tok)
         model.load_state_dict(checkpoint, strict=False)
-        if is_compile == 1:
+        if quantize_mode == 1:
+            model.quantize()
+        if compile_mode == 1:
             model = torch.compile(model)
             print('The model is compiled')
-        if is_compile == 2:
+        if compile_mode == 2:
             model = torch.compile(model, mode="reduce-overhead", fullgraph=True)
             print('The model is compiled (mode=reduce-overhead, fullgraph=True)')
         print(f"Loaded in {time.time() - start_time:.2f} seconds")

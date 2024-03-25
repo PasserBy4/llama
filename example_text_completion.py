@@ -17,7 +17,9 @@ def main(
     max_seq_len: int = 128,
     max_gen_len: int = 64,
     max_batch_size: int = 4,
-    is_compile: int = 0
+    compile_mode: int = 0,
+    quantize_mode: int = 0,
+    parallelism: int = 0
 ):
     """
     Entry point of the program for generating text using a pretrained model.
@@ -32,13 +34,19 @@ def main(
         max_seq_len (int, optional): The maximum sequence length for input prompts. Defaults to 128.
         max_gen_len (int, optional): The maximum length of generated sequences. Defaults to 64.
         max_batch_size (int, optional): The maximum batch size for generating sequences. Defaults to 4.
+        compile_mode (int, optional): 0: no compile, 1: compile, 2: compile w/reduce-overhead+fullgraph.
+        quantize_mode (int, optional): 0: no quantize, 1: int8 quantize.
+        parallelism (int, optional): 0: no parallelism, 1: parallelism.
     """ 
+    print(f'compile_mode: {compile_mode}, quantize_mode: {quantize_mode}, parallelism: {parallelism}')
     generator = Llama.build(
         ckpt_dir=ckpt_dir,
         tokenizer_path=tokenizer_path,
         max_seq_len=max_seq_len,
         max_batch_size=max_batch_size,
-        is_compile=is_compile
+        compile_mode=compile_mode,
+        quantize_mode=quantize_mode,
+        parallelism=parallelism
     )
 
     prompts: List[str] = [
