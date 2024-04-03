@@ -10,7 +10,7 @@ import time
 N_ITERS = 10
 
 def main(
-    ckpt_dir: str,
+    checkpoint_path: str,
     tokenizer_path: str,
     temperature: float = 0.6,
     top_p: float = 0.9,
@@ -18,14 +18,12 @@ def main(
     max_gen_len: int = 64,
     max_batch_size: int = 4,
     compile_mode: int = 0,
-    quantize_mode: int = 0,
-    parallelism: int = 0
 ):
     """
     Entry point of the program for generating text using a pretrained model.
 
     Args:
-        ckpt_dir (str): The directory containing checkpoint files for the pretrained model.
+        checkpoint_path (str): The path to the pretrained model checkpoint.
         tokenizer_path (str): The path to the tokenizer model used for text encoding/decoding.
         temperature (float, optional): The temperature value for controlling randomness in generation.
             Defaults to 0.6.
@@ -35,18 +33,14 @@ def main(
         max_gen_len (int, optional): The maximum length of generated sequences. Defaults to 64.
         max_batch_size (int, optional): The maximum batch size for generating sequences. Defaults to 4.
         compile_mode (int, optional): 0: no compile, 1: compile, 2: compile w/reduce-overhead+fullgraph.
-        quantize_mode (int, optional): 0: no quantize, 1: int8 quantize.
-        parallelism (int, optional): 0: no parallelism, 1: parallelism.
     """ 
-    print(f'compile_mode: {compile_mode}, quantize_mode: {quantize_mode}, parallelism: {parallelism}')
+    print(f'compile_mode: {compile_mode}')
     generator = Llama.build(
-        ckpt_dir=ckpt_dir,
+        checkpoint_path=checkpoint_path,
         tokenizer_path=tokenizer_path,
         max_seq_len=max_seq_len,
         max_batch_size=max_batch_size,
-        compile_mode=compile_mode,
-        quantize_mode=quantize_mode,
-        parallelism=parallelism
+        compile_mode=compile_mode
     )
 
     prompts: List[str] = [
