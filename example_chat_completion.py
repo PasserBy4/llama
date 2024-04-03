@@ -7,15 +7,17 @@ import fire
 
 from llama import Llama, Dialog
 
+N_ITERS = 10
 
 def main(
-    ckpt_dir: str,
+    checkpoint_path: str,
     tokenizer_path: str,
     temperature: float = 0.6,
     top_p: float = 0.9,
     max_seq_len: int = 512,
     max_batch_size: int = 8,
     max_gen_len: Optional[int] = None,
+    compile_mode: int = 0
 ):
     """
     Entry point of the program for generating text using a pretrained model.
@@ -33,10 +35,11 @@ def main(
             set to the model's max sequence length. Defaults to None.
     """
     generator = Llama.build(
-        ckpt_dir=ckpt_dir,
+        checkpoint_path=checkpoint_path,
         tokenizer_path=tokenizer_path,
         max_seq_len=max_seq_len,
         max_batch_size=max_batch_size,
+        compile_mode=compile_mode
     )
 
     dialogs: List[Dialog] = [
@@ -84,12 +87,26 @@ If a question does not make any sense, or is not factually coherent, explain why
             }
         ],
     ]
-    results = generator.chat_completion(
-        dialogs,  # type: ignore
-        max_gen_len=max_gen_len,
-        temperature=temperature,
-        top_p=top_p,
-    )
+    # warm up
+    for _ in range(10):
+        generator.chat_completion(
+            dialogs,  # type: ignore
+            max_gen_len=max_gen_len,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+    ave_speed = 0.0
+    for _ in range(N_ITERS):
+        results, speed = generator.chat_completion(
+            dialogs,  # type: ignore
+            max_gen_len=max_gen_len,
+            temperature=temperature,
+            top_p=top_p,
+        )
+        print(f'iter {_}: {speed} tokens/s')
+        ave_speed += speed
+    ave_speed /= N_ITERS
 
     for dialog, result in zip(dialogs, results):
         for msg in dialog:

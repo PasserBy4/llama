@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Literal, Optional, Tuple, TypedDict
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from fairscale.nn.model_parallel.initialize import (
     get_model_parallel_rank,
@@ -51,10 +52,11 @@ UNSAFE_ERROR = "Error: special tags are not allowed as part of the prompt."
 class Llama:
     @staticmethod
     def build(
-        ckpt_dir: str,
+        checkpoint_path: str,
         tokenizer_path: str,
         max_seq_len: int,
         max_batch_size: int,
+        compile_mode: int,
         model_parallel_size: Optional[int] = None,
         seed: int = 1,
     ) -> "Llama":
@@ -62,7 +64,7 @@ class Llama:
         Build a Llama instance by initializing and loading a pre-trained model.
 
         Args:
-            ckpt_dir (str): Path to the directory containing checkpoint files.
+            checkpoint_path (str): Path to the pretrained model checkpoint.
             tokenizer_path (str): Path to the tokenizer file.
             max_seq_len (int): Maximum sequence length for input text.
             max_batch_size (int): Maximum batch size for inference.
@@ -81,31 +83,25 @@ class Llama:
             and loads the pre-trained model and tokenizer.
 
         """
-        if not torch.distributed.is_initialized():
-            torch.distributed.init_process_group("nccl")
-        if not model_parallel_is_initialized():
-            if model_parallel_size is None:
-                model_parallel_size = int(os.environ.get("WORLD_SIZE", 1))
-            initialize_model_parallel(model_parallel_size)
+        # if not torch.distributed.is_initialized():
+        #     torch.distributed.init_process_group("nccl")
+        # if not model_parallel_is_initialized():
+        #     if model_parallel_size is None:
+        #         model_parallel_size = int(os.environ.get("WORLD_SIZE", 1))
+        #     initialize_model_parallel(model_parallel_size)
 
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        torch.cuda.set_device(local_rank)
-
+        # local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        # torch.cuda.set_device(local_rank)
         # seed must be the same in all processes
-        torch.manual_seed(seed)
+        # torch.manual_seed(seed)
 
-        if local_rank > 0:
-            sys.stdout = open(os.devnull, "w")
-
+        # if local_rank > 0:
+        #     sys.stdout = open(os.devnull, "w")
+        assert Path(checkpoint_path).is_file(), checkpoint_path
         start_time = time.time()
-        checkpoints = sorted(Path(ckpt_dir).glob("*.pth"))
-        assert len(checkpoints) > 0, f"no checkpoint files found in {ckpt_dir}"
-        assert model_parallel_size == len(
-            checkpoints
-        ), f"Loading a checkpoint for MP={len(checkpoints)} but world size is {model_parallel_size}"
-        ckpt_path = checkpoints[get_model_parallel_rank()]
-        checkpoint = torch.load(ckpt_path, map_location="cpu")
-        with open(Path(ckpt_dir) / "params.json", "r") as f:
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", mmap=True, weights_only=True)
+        checkpoint_dir = Path(checkpoint_path).parent
+        with open(checkpoint_dir / "params.json", "r") as f:
             params = json.loads(f.read())
 
         model_args: ModelArgs = ModelArgs(
@@ -115,9 +111,24 @@ class Llama:
         )
         tokenizer = Tokenizer(model_path=tokenizer_path)
         model_args.vocab_size = tokenizer.n_words
-        torch.set_default_tensor_type(torch.cuda.HalfTensor)
         model = Transformer(model_args)
         model.load_state_dict(checkpoint, strict=False)
+        # for name, module in model.named_modules():
+        #     if isinstance(module, nn.Linear):
+        #         print(f"{name}.weight: {module.weight.size()}")
+        #         print(module.weight)
+        if "int8" in str(checkpoint_path):
+            print("Using int8 weight-only quantization")
+            from quantize import WeightOnlyInt8QuantHandler
+            quantizer = WeightOnlyInt8QuantHandler(model)
+            model = quantizer.convert_for_runtime()
+        model = model.to(device='cuda', dtype=torch.bfloat16)
+        if compile_mode == 1:
+            model = torch.compile(model)
+            print('The model is compiled')
+        if compile_mode == 2:
+            model = torch.compile(model, mode="reduce-overhead", fullgraph=True)
+            print('The model is compiled (mode=reduce-overhead, fullgraph=True)')
         print(f"Loaded in {time.time() - start_time:.2f} seconds")
 
         return Llama(model, tokenizer)
@@ -238,7 +249,7 @@ class Llama:
         max_gen_len: Optional[int] = None,
         logprobs: bool = False,
         echo: bool = False,
-    ) -> List[CompletionPrediction]:
+    ) -> Tuple[List[CompletionPrediction], float]:
         """
         Perform text completion for a list of prompts using the language generation model.
 
@@ -262,6 +273,8 @@ class Llama:
         if max_gen_len is None:
             max_gen_len = self.model.params.max_seq_len - 1
         prompt_tokens = [self.tokenizer.encode(x, bos=True, eos=False) for x in prompts]
+
+        start_time = time.time()
         generation_tokens, generation_logprobs = self.generate(
             prompt_tokens=prompt_tokens,
             max_gen_len=max_gen_len,
@@ -270,6 +283,11 @@ class Llama:
             logprobs=logprobs,
             echo=echo,
         )
+
+        end_time = time.time()
+        total_time = end_time - start_time
+        total_tokens = sum(len(tokens) for tokens in generation_tokens)
+        speed = total_tokens / total_time
         if logprobs:
             return [
                 {
@@ -278,8 +296,9 @@ class Llama:
                     "logprobs": logprobs_i,
                 }
                 for t, logprobs_i in zip(generation_tokens, generation_logprobs)
-            ]
-        return [{"generation": self.tokenizer.decode(t)} for t in generation_tokens]
+            ], speed
+        
+        return [{"generation": self.tokenizer.decode(t)} for t in generation_tokens], speed
 
     def chat_completion(
         self,
@@ -288,7 +307,7 @@ class Llama:
         top_p: float = 0.9,
         max_gen_len: Optional[int] = None,
         logprobs: bool = False,
-    ) -> List[ChatPrediction]:
+    ) -> Tuple[List[ChatPrediction], float]:
         """
         Generate assistant responses for a list of conversational dialogs using the language generation model.
 
@@ -361,6 +380,7 @@ class Llama:
             )
             prompt_tokens.append(dialog_tokens)
 
+        start_time = time.time()
         generation_tokens, generation_logprobs = self.generate(
             prompt_tokens=prompt_tokens,
             max_gen_len=max_gen_len,
@@ -368,6 +388,10 @@ class Llama:
             top_p=top_p,
             logprobs=logprobs,
         )
+        end_time = time.time()
+        total_time = end_time - start_time
+        total_tokens = sum(len(tokens) for tokens in generation_tokens)
+        speed = total_tokens / total_time
         if logprobs:
             return [
                 {
@@ -383,7 +407,7 @@ class Llama:
                 for t, logprobs_i, unsafe in zip(
                     generation_tokens, generation_logprobs, unsafe_requests
                 )
-            ]
+            ], speed
         return [
             {
                 "generation": {
@@ -392,7 +416,7 @@ class Llama:
                 }
             }
             for t, unsafe in zip(generation_tokens, unsafe_requests)
-        ]
+        ], speed
 
 
 def sample_top_p(probs, p):

@@ -3,7 +3,7 @@
 
 import math
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Type
 
 import fairscale.nn.model_parallel.initialize as fs_init
 import torch
@@ -13,8 +13,45 @@ from fairscale.nn.model_parallel.layers import (
     ParallelEmbedding,
     RowParallelLinear,
 )
+
+from contextvars import ContextVar
+import bitsandbytes as bnb
+import tqdm
+
 from torch import nn
 
+# default_quantize: ContextVar[int] = ContextVar("default_quantize", default=0)
+
+# class UninitializedLinear(nn.Linear):
+#     def reset_parameters(self) -> None:
+#         pass
+
+# class InferenceQuantizedLinear(bnb.nn.Linear8bitLt):
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(has_fp16_weights=False, threshold=6.0, *args, **kwargs)
+
+#     def reset_parameters(self) -> None:
+#         pass
+
+# def get_linear_class():
+    # if default_quantize.get() == 1:
+    #     return InferenceQuantizedLinear
+    # return UninitializedLinear
+
+# def convert_linear_to_bnb(float_linear):
+#     new_layer = InferenceQuantizedLinear(
+#         float_linear.in_features,
+#         float_linear.out_features,
+#         bias=float_linear.bias is not None
+#     )
+#     new_layer._parameters["weight"] = bnb.nn.Int8Params(
+#         float_linear.weight.data.cpu(),
+#         requires_grad=False,
+#         has_fp16_weights=False
+#     )
+#     if float_linear.bias is not None:
+#         new_layer._parameters["bias"] = float_linear.bias
+#     return new_layer
 
 @dataclass
 class ModelArgs:
@@ -198,41 +235,61 @@ class Attention(nn.Module):
         """
         super().__init__()
         self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
-        model_parallel_size = fs_init.get_model_parallel_world_size()
+        # model_parallel_size = fs_init.get_model_parallel_world_size()
+        model_parallel_size = 1
         self.n_local_heads = args.n_heads // model_parallel_size
         self.n_local_kv_heads = self.n_kv_heads // model_parallel_size
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
         self.head_dim = args.dim // args.n_heads
-
-        self.wq = ColumnParallelLinear(
+    
+            # self.wq = ColumnParallelLinear(
+            #     args.dim,
+            #     args.n_heads * self.head_dim,
+            #     bias=False,
+            #     gather_output=False,
+            #     init_method=lambda x: x,
+            # )
+            # self.wk = ColumnParallelLinear(
+            #     args.dim,
+            #     self.n_kv_heads * self.head_dim,
+            #     bias=False,
+            #     gather_output=False,
+            #     init_method=lambda x: x,
+            # )
+            # self.wv = ColumnParallelLinear(
+            #     args.dim,
+            #     self.n_kv_heads * self.head_dim,
+            #     bias=False,
+            #     gather_output=False,
+            #     init_method=lambda x: x,
+            # )
+            # self.wo = RowParallelLinear(
+            #     args.n_heads * self.head_dim,
+            #     args.dim,
+            #     bias=False,
+            #     input_is_parallel=True,
+            #     init_method=lambda x: x,
+            # )
+        self.wq = nn.Linear(
             args.dim,
             args.n_heads * self.head_dim,
             bias=False,
-            gather_output=False,
-            init_method=lambda x: x,
         )
-        self.wk = ColumnParallelLinear(
+        self.wk = nn.Linear(
             args.dim,
-            self.n_kv_heads * self.head_dim,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x,
-        )
-        self.wv = ColumnParallelLinear(
-            args.dim,
-            self.n_kv_heads * self.head_dim,
-            bias=False,
-            gather_output=False,
-            init_method=lambda x: x,
-        )
-        self.wo = RowParallelLinear(
             args.n_heads * self.head_dim,
-            args.dim,
             bias=False,
-            input_is_parallel=True,
-            init_method=lambda x: x,
         )
-
+        self.wv = nn.Linear(
+            args.dim,
+            args.n_heads * self.head_dim,
+            bias=False,
+        )
+        self.wo = nn.Linear(
+            args.dim,
+            args.n_heads * self.head_dim,
+            bias=False
+        )
         self.cache_k = torch.zeros(
             (
                 args.max_batch_size,
@@ -334,14 +391,25 @@ class FeedForward(nn.Module):
             hidden_dim = int(ffn_dim_multiplier * hidden_dim)
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
 
-        self.w1 = ColumnParallelLinear(
-            dim, hidden_dim, bias=False, gather_output=False, init_method=lambda x: x
+        # self.w1 = ColumnParallelLinear(
+        #     dim, hidden_dim, bias=False, gather_output=False, init_method=lambda x: x
+        # )
+        # self.w2 = RowParallelLinear(
+        #     hidden_dim, dim, bias=False, input_is_parallel=True, init_method=lambda x: x
+        # )
+        # self.w3 = ColumnParallelLinear(
+        #     dim, hidden_dim, bias=False, gather_output=False, init_method=lambda x: x
+        # )
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w2 = nn.Linear(
+            hidden_dim,
+            dim,
+            bias=False,
         )
-        self.w2 = RowParallelLinear(
-            hidden_dim, dim, bias=False, input_is_parallel=True, init_method=lambda x: x
-        )
-        self.w3 = ColumnParallelLinear(
-            dim, hidden_dim, bias=False, gather_output=False, init_method=lambda x: x
+        self.w3 = nn.Linear(
+            dim,
+            hidden_dim,
+            bias=False,
         )
 
     def forward(self, x):
@@ -409,7 +477,6 @@ class TransformerBlock(nn.Module):
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
-
 class Transformer(nn.Module):
     def __init__(self, params: ModelArgs):
         """
@@ -434,18 +501,20 @@ class Transformer(nn.Module):
         self.vocab_size = params.vocab_size
         self.n_layers = params.n_layers
 
-        self.tok_embeddings = ParallelEmbedding(
-            params.vocab_size, params.dim, init_method=lambda x: x
-        )
+        # self.tok_embeddings = ParallelEmbedding(
+        #     params.vocab_size, params.dim, init_method=lambda x: x
+        # )
+        self.tok_embeddings = nn.Embedding(params.vocab_size, params.dim)
 
         self.layers = torch.nn.ModuleList()
         for layer_id in range(params.n_layers):
             self.layers.append(TransformerBlock(layer_id, params))
 
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
-        self.output = ColumnParallelLinear(
-            params.dim, params.vocab_size, bias=False, init_method=lambda x: x
-        )
+        # self.output = ColumnParallelLinear(
+        #     params.dim, params.vocab_size, bias=False, init_method=lambda x: x
+        # )
+        self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
         self.freqs_cis = precompute_freqs_cis(
             # Note that self.params.max_seq_len is multiplied by 2 because the token limit for the Llama 2 generation of models is 4096. 
@@ -493,3 +562,29 @@ class Transformer(nn.Module):
         h = self.norm(h)
         output = self.output(h).float()
         return output
+
+    # def quantize(self):
+    #     def get_layer(model, attrs):
+    #         layer = model
+    #         for attr in attrs.split("."):
+    #             layer = getattr(layer, attr)
+    #         return layer
+
+    #     def set_layer(model, name, layer):
+    #         try:
+    #             attrs, name = name.rsplit(".", 1)
+    #             model = get_layer(model, attrs)
+    #         except ValueError:
+    #             pass
+    #         setattr(model, name, layer)
+        
+    #     linear_layers = {
+    #         k: v for k, v in self.named_modules() if isinstance(v, nn.Linear)
+    #     }
+
+    #     print("Quantizing", len(linear_layers), "layers")
+    #     for name, layer in tqdm.tqdm(linear_layers.items()):
+    #         new_layer = convert_linear_to_bnb(layer)
+    #         set_layer(self, name, new_layer)
+    #     self.cuda()
+
